@@ -1,0 +1,89 @@
+#!/bin/bash
+#
+# Purpose = Hadoop TaskTracker Restart based on memory consumptions.
+# Created on 2016-Jun-22
+# Author = Animesh Das
+# Version 1.0
+#
+# This script doesn't restart hadoop tastracker or do anything if the tasktracker is not running
+# or the jstat returns unexpected result. This script has not been tested under those exceptions or 
+# scenarios.
+#
+
+#### --- CONFIGURATION --- ####
+
+# Available memory MEM_TOTAL, value below should in KB as JSTAT supports only KB.
+# The value should be the equavalent to -Xmx{num}{unit} value in file /etc/hadoop-0.20/conf/hadoop-env.sh 
+# for environment variable HADOOP_JVM_ARGS. e.g. -Xmx3072m (3Gb) max memory which translates 
+# to 3072(mb)x1024=3145728(kb) for MEM_TOTAL below.
+MEM_TOTAL=3145728 
+
+# MEM_THRESHOLD value below is boundary in percentage out of MEM_TOTAL abalable memory above. 
+# It should be a non-float number in percentage without the % symbol.
+# If the memory usage reaches upto this percentage, action will be taken.
+MEM_THRESHOLD=90 
+
+#### DO NOT MODIFY ANYTHING BELOW THIS LINE ####
+
+
+
+# First check if the script is running under root priviledges.
+if [[ $(id -u) -ne 0 ]] ; then echo "Please run this script with root priviledges."; echo "Usage: sudo $0 $@" ; exit 1 ; fi
+
+## Counter code ##
+CNTFILE="/var/log/`basename $0`-counter"
+CNT=0
+FDATE=`date`
+
+# if [ ! -e "$CNTFILE" ] ; then
+#     touch $CNTFILE
+# fi
+
+# if [ ! -w "$CNTFILE" ] ; then
+#     echo "Cannot write to $CNTFILE. Please correct the problem for correct runtime history."
+# fi
+
+( [ -e "$CNTFILE" ] || touch "$CNTFILE" 2> /dev/null ) && [ ! -w "$CNTFILE" ] && echo "Cannot write to $CNTFILE. Please correct the problem for correct runtime history." && exit 1
+#touch $CNTFILE
+. $CNTFILE
+CNT=$(expr $CNT + 1)
+FDATE=$FDATE
+echo -e "CNT=$CNT\nFDATE=\"$FDATE\"" > $CNTFILE
+
+# Report timestamp
+TIMESTAMP=`date "+%Y-%m-%d %H:%M:%S"`
+
+# For safety, roundoff all values whenever possible. 
+MEM_THRESHOLD=`echo "$MEM_THRESHOLD" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
+MEM_THRESHOLD_VAL=`echo "scale=2; $MEM_THRESHOLD*$MEM_TOTAL/100" | bc`
+MEM_THRESHOLD_VAL=`echo "$MEM_THRESHOLD_VAL" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
+JSTAT_BIN=`locate -bl1 jstat`
+JPS_BIN=`locate -bl1 jps`
+TT_PID=`$JPS_BIN -v | grep tasktracker | awk '{print $1}'`
+echo "####################### $TIMESTAMP : REPORT #######################"
+$JSTAT_BIN -gc $TT_PID 
+OC_RAW=`$JSTAT_BIN -gc $TT_PID | gawk 'FNR == 2 {print $7}'`
+OC_FMT=`echo "$OC_RAW" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
+MEM_CUR_PERCENT=$(awk "BEGIN { pc=100*${OC_FMT}/${MEM_TOTAL}; i=int(pc); print (pc-i<0.5)?i:i+1 }") # percentage with next roundoff
+#MEM_CUR_PERCENT=$(awk "BEGIN { pc=100*${OC_FMT}/${MEM_TOTAL}; print pc }") # percentage without next roundoff, with float value. 
+#echo "OC value is $OC_RAW(KB) which is $MEM_CUR_PERCENT(%) of $MEM_TOTAL(kb)"
+MEM_CUR_PERCENT_VAL=`echo "scale=2; $MEM_CUR_PERCENT*$MEM_TOTAL/100" | bc`
+MEM_CUR_PERCENT_VAL=`echo "$MEM_CUR_PERCENT_VAL" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
+#echo "$MEM_CUR_PERCENT% of $MEM_TOTAL is $MEM_CUR_PERCENT_VAL"
+echo "Monitoring current OC value which is "$OC_RAW
+echo "Runtime History: Executed $CNT time(s) since $FDATE. Delete $CNTFILE to reset."
+echo "Configured Memory Threshold: "$MEM_THRESHOLD_VAL"(KB) limit, i.e. "$MEM_THRESHOLD"% of available "$MEM_TOTAL"(KB) memory."
+if [ $MEM_CUR_PERCENT -gt $MEM_THRESHOLD ] || [ $MEM_CUR_PERCENT_VAL -gt $MEM_THRESHOLD_VAL ]; then
+	echo "Current Status: Threshold limit reached! Currently used "$OC_FMT"(KB), i.e. "$MEM_CUR_PERCENT"% of available "$MEM_TOTAL"(KB) memory."
+	echo "Action: Restarting TaskTracker Service."
+	# TaskTracker Service Restart
+	/sbin/service hadoop-0.20-tasktracker restart
+	RET=$?
+else
+	echo "Current Status: Threshold limit not reached! Currently used "$OC_FMT"(KB), i.e. "$MEM_CUR_PERCENT"% of available "$MEM_TOTAL"(KB) memory."
+	echo "Action: Ignoring TaskTracker Service Restart."
+	RET=0
+fi
+echo "##############################################################################"
+echo
+exit $RET
