@@ -1,0 +1,122 @@
+#!/bin/bash
+#Script that monitors consumer offset lag
+#Script that monitors jmx beans for a kafka application
+#Script that monitors java memory pools for a kafka application
+
+# Usage 
+# ---------
+# Use case 1:
+# kafka_mon.sh Offsetlag BeanName BeanParam1 BeanParam2 Count
+# e.g. kafka_mon.sh OffsetLag kafka.network:type=RequestMetrics name=ResponseSendTimeMs request=Produce 10
+
+# Use case 2:
+# kafka_mon.sh Kafka BeanName BeanParam1 BeanParam2 Count
+# e.g. kafka_mon.sh kafka kafka.network:type=RequestMetrics name=ResponseSendTimeMs request=Produce 20
+
+# ToDo
+# 1) Check the first arg is either kafka or OffsetLang. If not, show usage.
+# 2) Check remaining args based on 1st arg. i.e. If 1st arg is kafka then check for 5 args, else....
+# 3) Strict check of arguments passed. 
+# 4) Commenting at each steps. 
+
+function printHelp() {
+
+cat >&2 <<EOF
+$@ 
+
+Usage: $0 [kafka | Offsetlag] [beanName [argument] | topic]  [request countNum | group] 
+Examples:     
+    1) $0 kafka kafka.network:type=RequestMetrics name=ResponseSendTimeMs request=Produce 20
+    2) $0 kafka kafka.network:type=RequestMetrics request=Produce 20
+    3) $0 Offsetlag emailTopic meetupGroup
+
+This script must be run either to monitor [keyword: kafka] jmx beans or to graph consumer [keyword: Offsetlag].
+
+EOF
+exit 0
+}
+
+
+
+shopt -s nocasematch # Enable case insensative match for bash if [[ and case statements.
+# Check the first argument, and set default.
+case "$1" in
+        kafka) # Check & set value in case 'kafka' and sufficient number of arguments passed.
+                    if [ ! "$#" -eq 4 -a ! "$#" -eq 5 ]; then # check if sufficient number of arguments passed.
+                       printHelp "$0 $@ - Insufficient number($#) of argument(s). Check usage below."
+                    else
+                        # Set values in case 'kafka' with sufficient number of arguments passed.
+                        app=$1 
+                        bean="$2,$3,$4"
+                        attr=$5
+                    fi
+                    ;;         
+        Offsetlag) # Check & set value in case 'OffsetLag' and sufficient number of arguments passed.
+                    if [ ! "$#" -eq 3 ]; then # check if sufficient number of arguments passed.
+                       printHelp "$0 $@ - Insufficient number($#) of argument(s). Check usage below."
+                    else
+                        # Set values in case 'Offsetlag' with sufficient number of arguments passed.
+                        topic=$2       #Name of the kafka topic
+                        group=$3       #Consumer_group_name, it is used by consumer to connect to kafka
+                    fi
+                    ;;
+        -h | --help) # Call the helper function for usage reference
+                    printHelp
+                    ;;
+        *) # set default values as 'kafka' and other values in case first argument is invalid.
+                    printHelp "Invalid first argument. It should start with either keyword 'kafka' or 'Offsetlag'. Check usage below."
+                    ;; 
+esac
+
+exit;
+
+shopt -u nocasematch # Disable case insensative match for bash if [[ and case statements.
+
+# Now set rest of the values.
+runjmx="/usr/local/bin/runjmx"  #Path to runjmx script
+clientPort=$(grep ^clientPort /opt/kafka/config/zookeeper.properties | awk -F= '{print $NF}')
+zookeeperList=$(egrep '^server.[0-9]=.*' /opt/kafka/config/zookeeper.properties | sed -e "s/^.*=\([^:]*\):.*$/\1:${clientPort}/g" | paste -sd,)
+
+#########################################
+#Graph Consumer Offset Lag#
+#########################################
+
+if [ "$1" == "Offsetlag" ];then
+
+offset=`/opt/kafka/bin/kafka-consumer-offset-checker.sh --zookeeper ${zookeeperList} --group $3 --topic $2 | sed '1d' | awk '{print $6}' | awk '{sum+=$1};END{print sum}'`
+        if [[ $offset =~ ^-?[0-9]+$ ]]; then
+                echo $offset
+        else
+                echo "Non-Integer value returned for Kafka consumer lag for $2 under group $3. Refer http://xfiles/display/Set/Kafka+Consumers#KafkaConsumers-InventoryListofKafkaConsumers to check the current list of Active Consumers. You can also run /opt/kafka/bin/kafka-consumer-offset-checker.sh --zookeeper localhost:2181 --group $2 --topic $3 on any of the kafka hosts to check the issue." | mail -s "ERROR: Kafka Consumer Lag" cmo-itcm@domain.com
+        fi
+
+#########################################
+#Block of code to monitor kafka jmx beans#
+##########################################
+
+elif [ "$#" -eq 5 ] || [ "$#" -eq 4 ];then
+
+        #To handle the change in $bean value for few of the kafka jmx metrics
+        if [[ -z $5 ]]; then
+          bean="$2,$3"
+          attr=$4
+        fi
+
+        if [ -f $runjmx ]; then
+                value=`sudo -u kafka $runjmx $app $bean $attr | awk '{print $NF}'`
+                if [[ -z $value ]]; then
+                        exit 0
+                else
+                         if [[ $value == *[[:digit:]]* ]]; then
+                                echo $value
+                        else
+                                exit 0
+                        fi
+                fi
+        else
+                exit 0
+        fi
+
+###########################################
+
+fi
