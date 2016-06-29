@@ -12,4 +12,4 @@ If you need help, drop me an email at _**jobs4ani ~~[at]~~ gmail ~~[dot]~~ com**
 
 
 ### License
-GPL3 Licenced. Click [here](../blob/master/LICENSE) for licencing details.
+GPL3 Licenced. Click [here](blob/master/LICENSE) for licencing details.
