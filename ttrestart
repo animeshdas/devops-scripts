@@ -11,12 +11,26 @@
 #
 
 #### --- CONFIGURATION --- ####
+# Process Search Phrase
+PROC_SEARCH="tasktracker"
 
-# Available memory MEM_TOTAL, value below should in KB as JSTAT supports only KB.
-# The value should be the equavalent to -Xmx{num}{unit} value in file /etc/hadoop-0.20/conf/hadoop-env.sh 
-# for environment variable HADOOP_JVM_ARGS. e.g. -Xmx3072m (3Gb) max memory which translates 
-# to 3072(mb)x1024=3145728(kb) for MEM_TOTAL below.
-MEM_TOTAL=3145728 
+# Service control name
+SERVICE_CTLNAME="hadoop-0.20-tasktracker"
+
+# Available memory MEM_TOTAL, value can be suffixed with 'b' or 'k' or 'm' or 'g' or 'p' or even without 
+# any suffix in case of bytes. Remember, without suffix is always considered as bytes. 
+# i.e. b for Bytes, k for Kilobytes, m for Megabytes, G for Gigabytes and p for Petabytes & are case-insensitive. 
+# e.g. MEM_TOTAL=3145728 is equivalent to MEM_TOTAL=3145728b OR MEM_TOTAL=3m OR MEM_TOTAL=3072k
+# In case you want this program to dynamically decide the value of MEM_TOTAL, assign it a blank value 
+# or comment it out. e.g. MEM_TOTAL='' On doing that, this program will automatically parse the rightmost 
+# -Xmx{num}{unit} value from the running process to dynamically assign its value MEM_TOTAL. 
+# Hence, keep it blank if you want to dynamically retreive the allocated memory from the process's runtime
+# parameter i.e. rightmost -Xmx value. 
+# Examples :
+# MEM_TOTAL=3145728k
+# MEM_TOTAL=3G
+# MEM_TOTAL=''
+# MEM_TOTAL=3072m 
 
 # MEM_THRESHOLD value below is boundary in percentage out of MEM_TOTAL abalable memory above. 
 # It should be a non-float number in percentage without the % symbol.
@@ -25,43 +39,82 @@ MEM_THRESHOLD=90
 
 #### DO NOT MODIFY ANYTHING BELOW THIS LINE ####
 
-
+SERVICE_CTL="/sbin/service $SERVICE_CTLNAME"
 
 # First check if the script is running under root priviledges.
 if [[ $(id -u) -ne 0 ]] ; then echo "Please run this script with root priviledges."; echo "Usage: sudo $0 $@" ; exit 1 ; fi
 
+
 ## Counter code ##
-CNTFILE="/var/log/`basename $0`-counter"
-CNT=0
-FDATE=`date`
-
-# if [ ! -e "$CNTFILE" ] ; then
-#     touch $CNTFILE
-# fi
-
-# if [ ! -w "$CNTFILE" ] ; then
-#     echo "Cannot write to $CNTFILE. Please correct the problem for correct runtime history."
-# fi
-
-( [ -e "$CNTFILE" ] || touch "$CNTFILE" 2> /dev/null ) && [ ! -w "$CNTFILE" ] && echo "Cannot write to $CNTFILE. Please correct the problem for correct runtime history." && exit 1
-#touch $CNTFILE
-. $CNTFILE
-CNT=$(expr $CNT + 1)
-FDATE=$FDATE
-echo -e "CNT=$CNT\nFDATE=\"$FDATE\"" > $CNTFILE
+# CNTFILE="/var/log/`basename $0`-counter"
+# CNT=0
+# FDATE=`date`
+# ( [ -e "$CNTFILE" ] || touch "$CNTFILE" 2> /dev/null ) && [ ! -w "$CNTFILE" ] && echo "Cannot write to $CNTFILE. Please correct the problem for correct runtime history." && exit 1
+# #touch $CNTFILE
+# . $CNTFILE
+# CNT=$(expr $CNT + 1)
+# FDATE=$FDATE
+# echo -e "CNT=$CNT\nFDATE=\"$FDATE\"" > $CNTFILE
 
 # Report timestamp
-TIMESTAMP=`date "+%Y-%m-%d %H:%M:%S"`
+TIMESTAMP=`date +"[%d/%b/%Y:%k:%M:%S %z]"`
+
+JSTAT_BIN=`locate -bl1 jstat`
+JPS_BIN=`locate -bl1 jps`
+TT_PID=`$JPS_BIN -v | grep $PROC_SEARCH | awk '{print $1}'`
+
+LOG_LINE="$TIMESTAMP - $0 - SVC:$SERVICE_CTLNAME - PROC:$PROC_SEARCH - "
+#echo "####################### $TIMESTAMP : REPORT #######################"
+#echo "Runtime History: Executed $CNT time(s) since $FDATE. Delete $CNTFILE to reset."
+# Retreive values of $MEM_TOTAL dynamically, if $MEM_TOTAL is empty or not set.
+if [ -z "$MEM_TOTAL" ]; then
+	# Get the total allocated memory from running process by parsing the last or rightmost -Xmx value
+	#XMX=`ps auwx | grep $TT_PID | grep -oh '\-Xmx\w*' | cut -d'x' -f2 | tail -1`
+	XMX=`ps ef --pid $TT_PID | grep $PROC_SEARCH | grep -oh '\-Xmx\w*' | cut -d'x' -f2 | tail -1`
+	#echo "MEM_TOTAL not configured. Automode activated for rightmost -Xmx value of PID $TT_PID"
+	#echo -n "Auto-configured: "
+	LOG_LINE=$LOG_LINE"FromXms=True|CONFIGURED:"
+else
+	XMX=$MEM_TOTAL
+	#echo "Avoiding -Xmx value as MEM_TOTAL is preconfigured."
+	#echo -n "Pre-configured: "
+	LOG_LINE=$LOG_LINE"FromXms=False|CONFIGURED:"
+fi
+
+# Parse $MEM_TOTAL
+case ${XMX:(-1)} in
+	[0-9]|b|B) # Bytes
+		MEM_TOTALx=$(echo $XMX | tr -dc '0-9') # Extract only the numbers.
+		MEM_TOTAL=`echo "scale=0; $MEM_TOTALx/1024" | bc` # in kilobytes
+		;;
+	K|k) # Kilobytes
+		MEM_TOTALx=$(echo $XMX | tr -dc '0-9') # Extract only the numbers.
+		MEM_TOTAL=$MEM_TOTALx # already in kilobytes
+		;;
+	M|m) # Megabytes
+		MEM_TOTALx=$(echo $XMX | tr -dc '0-9') # Extract only the numbers.
+		MEM_TOTAL=`echo "scale=0; $MEM_TOTALx*1024" | bc` # in kilobytes
+		;;
+	G|g) # Gigabytes
+		MEM_TOTALx=$(echo $XMX | tr -dc '0-9') # Extract only the numbers.
+		MEM_TOTAL=`echo "scale=0; $MEM_TOTALx*1024*1024" | bc` # in kilobytes
+		;;
+	P|p) # Petabytes
+		MEM_TOTALx=$(echo $XMX | tr -dc '0-9') # Extract only the numbers.
+		MEM_TOTAL=`echo "scale=0; $MEM_TOTALx*1024*1024*1024" | bc` # in kilobytes
+		;;
+	*) # Unknown
+		echo "Unable to determine the -Xmx unit unknown."
+		exit 1
+		;;
+esac
+#echo "MEM_TOTAL=$XMX i.e. $MEM_TOTAL(KB)"
 
 # For safety, roundoff all values whenever possible. 
 MEM_THRESHOLD=`echo "$MEM_THRESHOLD" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
 MEM_THRESHOLD_VAL=`echo "scale=2; $MEM_THRESHOLD*$MEM_TOTAL/100" | bc`
 MEM_THRESHOLD_VAL=`echo "$MEM_THRESHOLD_VAL" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
-JSTAT_BIN=`locate -bl1 jstat`
-JPS_BIN=`locate -bl1 jps`
-TT_PID=`$JPS_BIN -v | grep tasktracker | awk '{print $1}'`
-echo "####################### $TIMESTAMP : REPORT #######################"
-$JSTAT_BIN -gc $TT_PID 
+#$JSTAT_BIN -gc $TT_PID 
 OC_RAW=`$JSTAT_BIN -gc $TT_PID | gawk 'FNR == 2 {print $7}'`
 OC_FMT=`echo "$OC_RAW" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
 MEM_CUR_PERCENT=$(awk "BEGIN { pc=100*${OC_FMT}/${MEM_TOTAL}; i=int(pc); print (pc-i<0.5)?i:i+1 }") # percentage with next roundoff
@@ -70,20 +123,23 @@ MEM_CUR_PERCENT=$(awk "BEGIN { pc=100*${OC_FMT}/${MEM_TOTAL}; i=int(pc); print (
 MEM_CUR_PERCENT_VAL=`echo "scale=2; $MEM_CUR_PERCENT*$MEM_TOTAL/100" | bc`
 MEM_CUR_PERCENT_VAL=`echo "$MEM_CUR_PERCENT_VAL" | awk '{printf("%d\n",$1 + 0.5)}'` # Rounding off without float.
 #echo "$MEM_CUR_PERCENT% of $MEM_TOTAL is $MEM_CUR_PERCENT_VAL"
-echo "Monitoring current OC value which is "$OC_RAW
-echo "Runtime History: Executed $CNT time(s) since $FDATE. Delete $CNTFILE to reset."
-echo "Configured Memory Threshold: "$MEM_THRESHOLD_VAL"(KB) limit, i.e. "$MEM_THRESHOLD"% of available "$MEM_TOTAL"(KB) memory."
+#echo "Monitoring current OC value which is "$OC_RAW
+#echo "Configured Memory Threshold Limit: "$MEM_THRESHOLD"% ("$MEM_THRESHOLD_VAL"Kb out of "$MEM_TOTAL"Kb)"
+LOG_LINE=$LOG_LINE"Memory="$MEM_TOTAL"Kb,Limit="$MEM_THRESHOLD"%|CURRENTSTATUS:"
 if [ $MEM_CUR_PERCENT -gt $MEM_THRESHOLD ] || [ $MEM_CUR_PERCENT_VAL -gt $MEM_THRESHOLD_VAL ]; then
-	echo "Current Status: Threshold limit reached! Currently used "$OC_FMT"(KB), i.e. "$MEM_CUR_PERCENT"% of available "$MEM_TOTAL"(KB) memory."
-	echo "Action: Restarting TaskTracker Service."
+	#echo "Current Memory Status: Above limit! Currently using "$MEM_CUR_PERCENT"% ("$OC_FMT"Kb out of "$MEM_TOTAL"Kb)"
+	#echo "Action: Restarting Service "$SERVICE_CTL
+	${SERVICE_CTL} restart
+	LOG_LINE=$LOG_LINE"Memory="$OC_FMT"Kb,Usage="$MEM_CUR_PERCENT"%|OC="$OC_RAW"|RESTART=TRUE"
 	# TaskTracker Service Restart
-	/sbin/service hadoop-0.20-tasktracker restart
 	RET=$?
 else
-	echo "Current Status: Threshold limit not reached! Currently used "$OC_FMT"(KB), i.e. "$MEM_CUR_PERCENT"% of available "$MEM_TOTAL"(KB) memory."
-	echo "Action: Ignoring TaskTracker Service Restart."
+	#echo "Current Memory Status: Within limit! Currently using "$MEM_CUR_PERCENT"% ("$OC_FMT"Kb out of "$MEM_TOTAL"Kb)"
+	#echo "Action: Ignore Service Restart "$SERVICE_CTL
+	LOG_LINE=$LOG_LINE"Memory="$OC_FMT"Kb,Usage="$MEM_CUR_PERCENT"%|OC="$OC_RAW"|RESTART=FALSE" 
 	RET=0
 fi
-echo "##############################################################################"
-echo
+#echo "##############################################################################"
+#echo
+echo $LOG_LINE 
 exit $RET
